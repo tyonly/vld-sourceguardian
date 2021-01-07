@@ -1,6 +1,6 @@
 /*
    +----------------------------------------------------------------------+
-   | Copyright (c) 1997-2016 Derick Rethans                               |
+   | Copyright (c) 1997-2019 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to the 2-Clause BSD license which is     |
    | available through the LICENSE file, or online at                     |
@@ -18,27 +18,12 @@
 #include "php.h"
 
 
-#if PHP_VERSION_ID >= 50399
-# define VLD_ZNODE znode_op
-# define VLD_ZNODE_ELEM(node,var) node.var
-# define VLD_TYPE(t) t##_type
-# define VLD_EXTENDED_VALUE(o) extended_value
-#else
-# define VLD_ZNODE znode
-# define VLD_ZNODE_ELEM(node,var) node.u.var
-# define VLD_TYPE(t) t.op_type
-# define VLD_EXTENDED_VALUE(o) o.u.EA.type
-#endif
+#define VLD_ZNODE znode_op
+#define VLD_ZNODE_ELEM(node,var) node.var
+#define VLD_TYPE(t) t##_type
+#define VLD_EXTENDED_VALUE(o) extended_value
 
-#if PHP_VERSION_ID >= 50700
-# define VAR_NUM(v) EX_VAR_TO_NUM(v)
-#else
-# if PHP_VERSION_ID >= 50500
-#  define VAR_NUM(v) ((zend_uint)(EX_TMP_VAR_NUM(0, 0) - EX_TMP_VAR(0, v)))
-# else
-#  define VAR_NUM(v) ((v)/(sizeof(temp_variable)))
-# endif
-#endif
+#define VAR_NUM(v) EX_VAR_TO_NUM(v)
 
 // flags used in the op array list
 #define OP1_USED   1<<0
@@ -72,11 +57,11 @@
 #define VLD_IS_JMP_ARRAY  1<<26
 
 typedef struct _op_usage {
-	char *name;
+	const char  *name;
 	unsigned int flags;
 } op_usage;
 
-void vld_dump_oparray (zend_op_array *opa TSRMLS_DC);
+void vld_dump_oparray (zend_op_array *opa);
 void vld_mark_dead_code (zend_op_array *opa);
 
 #endif

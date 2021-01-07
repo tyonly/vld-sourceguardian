@@ -1,6 +1,6 @@
 /*
    +----------------------------------------------------------------------+
-   | Copyright (c) 1997-2016 Derick Rethans                               |
+   | Copyright (c) 1997-2019 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to the 2-Clause BSD license which is     |
    | available through the LICENSE file, or online at                     |
@@ -9,22 +9,31 @@
    | Authors:  Derick Rethans <derick@derickrethans.nl>                   |
    +----------------------------------------------------------------------+
  */
-/* $Id: set.h,v 1.2 2006-11-12 13:59:53 helly Exp $ */
 
 #ifndef __BRANCHINFO_H__
 #define __BRANCHINFO_H__
 
 #include "set.h"
 #include "php_vld.h"
+#include "zend_compile.h"
+
+#if ZEND_USE_ABS_JMP_ADDR
+# define VLD_ZNODE_JMP_LINE(node, opline, base)  (int32_t)(((long)((node).jmp_addr) - (long)(base_address)) / sizeof(zend_op))
+#else
+# define VLD_ZNODE_JMP_LINE(node, opline, base)  (int32_t)(((int32_t)((node).jmp_offset) / sizeof(zend_op)) + (opline))
+#endif
 
 #define VLD_JMP_NOT_SET -1
 #define VLD_JMP_EXIT    -2
+
+#define VLD_BRANCH_MAX_OUTS 32
 
 typedef struct _vld_branch {
 	unsigned int start_lineno;
 	unsigned int end_lineno;
 	unsigned int end_op;
-	int          out[2];
+	unsigned int outs_count;
+	int          outs[VLD_BRANCH_MAX_OUTS];
 } vld_branch;
 
 typedef struct _vld_path {
@@ -51,7 +60,7 @@ void vld_branch_info_update(vld_branch_info *branch_info, unsigned int pos, unsi
 void vld_branch_post_process(zend_op_array *opa, vld_branch_info *branch_info);
 void vld_branch_find_paths(vld_branch_info *branch_info);
 
-void vld_branch_info_dump(zend_op_array *opa, vld_branch_info *branch_info TSRMLS_DC);
+void vld_branch_info_dump(zend_op_array *opa, vld_branch_info *branch_info);
 void vld_branch_info_free(vld_branch_info *branch_info);
 
 #endif

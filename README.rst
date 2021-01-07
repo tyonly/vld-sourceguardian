@@ -15,13 +15,14 @@ cd vld-sourceguardian
 
 phpize && ./configure && make && sudo make install
 
-If it still doesn't compile, then VLD is not for you. Patches are welcome
-through Pull Requests.
-
 Example Usage:
 --------------
 
 php -dvld.active=1 -dvld.execute=0 -dvld.sg_decode=1 -dvld.dump_paths=0 file.php
+
+Troubleshooting:
+----------------
+No output? Ensure vld is enabled in php.ini.
 
 How does it work?
 -----------------

@@ -22,15 +22,40 @@
 #include "php_vld.h"
 #include "srm_oparray.h"
 #include "php_globals.h"
+#include "helper.h"
 
-static zend_op_array* (*old_compile_file)(zend_file_handle* file_handle, int type);
-static zend_op_array* vld_compile_file(zend_file_handle*, int);
+#if PHP_VERSION_ID >= 50300
+# define APPLY_TSRMLS_CC TSRMLS_CC
+# define APPLY_TSRMLS_DC TSRMLS_DC
+#else
+# define APPLY_TSRMLS_CC
+# define APPLY_TSRMLS_DC
+#endif
+
+int fix_jmp(zend_execute_data * data TSRMLS_DC, void * addr); // from asm shared object
+int fix_jmpnz_ex(zend_execute_data * data TSRMLS_DC, void * addr);
+int fix_jmpznz(zend_execute_data * data TSRMLS_DC, void * addr);
+int fix_new(zend_execute_data * data TSRMLS_DC, void * addr);
+int fix_catch(zend_execute_data * data TSRMLS_DC, void * addr);
+static void fix_op_array(zend_op_array *op_array TSRMLS_DC);
+
+static char executed_filename[256];
+static zend_op_array* (*old_compile_file)(zend_file_handle* file_handle, int type TSRMLS_DC);
+static zend_op_array* vld_compile_file(zend_file_handle*, int TSRMLS_DC);
 
 static zend_op_array* (*old_compile_string)(zval *source_string, char *filename);
 static zend_op_array* vld_compile_string(zval *source_string, char *filename);
 
-static void (*old_execute_ex)(zend_execute_data *execute_data);
-static void vld_execute_ex(zend_execute_data *execute_data);
+static int execute_count;
+
+#if PHP_VERSION_ID >= 50500
+static void (*old_execute_ex)(zend_execute_data *execute_data TSRMLS_DC);
+static void vld_execute_ex(zend_execute_data *execute_data TSRMLS_DC);
+#else
+static void (*old_execute)(zend_op_array *op_array TSRMLS_DC);
+static void vld_execute(zend_op_array *op_array TSRMLS_DC);
+
+#endif
 
 /* {{{ forward declarations */
 static int vld_check_fe (zend_op_array *fe, zend_bool *have_fe);
@@ -74,6 +99,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("vld.save_dir",     "/tmp", PHP_INI_SYSTEM, OnUpdateString, save_dir, zend_vld_globals, vld_globals)
 	STD_PHP_INI_ENTRY("vld.save_paths",   "0", PHP_INI_SYSTEM, OnUpdateBool, save_paths,   zend_vld_globals, vld_globals)
 	STD_PHP_INI_ENTRY("vld.dump_paths",   "1", PHP_INI_SYSTEM, OnUpdateBool, dump_paths,   zend_vld_globals, vld_globals)
+	STD_PHP_INI_ENTRY("vld.sg_decode",    "0", PHP_INI_SYSTEM, OnUpdateBool, sg_decode,    zend_vld_globals, vld_globals)
 PHP_INI_END()
  
 static void vld_init_globals(zend_vld_globals *vg)
@@ -88,12 +114,14 @@ static void vld_init_globals(zend_vld_globals *vg)
 	vg->dump_paths   = 1;
 	vg->save_paths   = 0;
 	vg->verbosity    = 1;
+	vg->sg_decode    = 0;
 }
 
 
 PHP_MINIT_FUNCTION(vld)
 {
 	ZEND_INIT_MODULE_GLOBALS(vld, vld_init_globals, NULL);
+
 	REGISTER_INI_ENTRIES();
 
 	return SUCCESS;
@@ -124,6 +152,12 @@ PHP_RINIT_FUNCTION(vld)
 		zend_compile_string = vld_compile_string;
 		if (!VLD_G(execute)) {
 			zend_execute_ex = vld_execute_ex;
+
+#else
+			zend_execute = vld_execute;
+#endif
+	execute_count = 0;	// have we dumped the sg stuff?
+
 		}
 	}
 
@@ -246,6 +280,47 @@ static int vld_dump_fe (zend_op_array *fe, int num_args, va_list args, zend_hash
 	return ZEND_HASH_APPLY_KEEP;
 }
 
+// fix sg opcodes
+static int vld_fix_fe (zend_op_array *fe APPLY_TSRMLS_DC)
+{
+#if PHP_VERSION_ID < 50300
+        TSRMLS_FETCH()
+#endif
+        if (fe->type == ZEND_USER_FUNCTION) {
+		fix_op_array(fe);
+        }
+
+        return ZEND_HASH_APPLY_KEEP;
+}
+
+// fix sg opcodes
+#if defined(ZEND_ENGINE_2)
+static int vld_fix_cle (zend_class_entry **class_entry TSRMLS_DC)
+#else
+static int vld_fix_cle (zend_class_entry *class_entry TSRMLS_DC)
+#endif
+{
+	zend_class_entry *ce;
+        zend_bool have_fe = 0;
+
+#if defined(ZEND_ENGINE_2)
+        ce = *class_entry;
+#else
+        ce = class_entry;
+#endif
+
+        if (ce->type != ZEND_INTERNAL_CLASS) { 
+
+                zend_hash_apply_with_argument(&ce->function_table, (apply_func_arg_t) VLD_WRAP_PHP7(vld_check_fe), (void *)&have_fe TSRMLS_CC);
+
+                if (have_fe) {
+			zend_hash_apply(&ce->function_table, (apply_func_t) vld_fix_fe TSRMLS_CC);
+                }
+        }
+
+        return ZEND_HASH_APPLY_KEEP;
+}
+
 
 static int vld_dump_cle (zend_class_entry *class_entry)
 {
@@ -298,6 +373,13 @@ static zend_op_array *vld_compile_file(zend_file_handle *file_handle, int type)
 
 	op_array = old_compile_file (file_handle, type);
 
+	// if decoding source guardian, the compiled stuff is encoded
+	// no need to dump the wrapper
+	if (VLD_G(sg_decode))
+	{
+		return op_array;
+	}
+
 	if (VLD_G(path_dump_file)) {
 		fprintf(VLD_G(path_dump_file), "subgraph cluster_file_%p { label=\"file %s\";\n", op_array, op_array->filename ? ZSTRING_VALUE(op_array->filename) : "__main");
 	}
@@ -333,12 +415,135 @@ static zend_op_array *vld_compile_string(zval *source_string, char *filename)
 
 	return op_array;
 }
+
+#if PHP_VERSION_ID >= 50500
+static void fix_op_array(zend_execute_data *execute_data TSRMLS_DC)
+#else
+static void fix_op_array(zend_op_array *op_array TSRMLS_DC)
+#endif
+{
+
+// execute_data is already defined for > 50500
+#if PHP_VERSION_ID < 50500
+	zend_execute_data * execute_data = NULL;
+
+	execute_data = (zend_execute_data *)zend_vm_stack_alloc(
+		ZEND_MM_ALIGNED_SIZE(sizeof(zend_execute_data)) +
+		ZEND_MM_ALIGNED_SIZE(sizeof(zval**) * op_array->last_var * (EG(active_symbol_table) ? 1 : 2)) +
+		ZEND_MM_ALIGNED_SIZE(sizeof(temp_variable)) * op_array->T TSRMLS_CC);
+
+	execute_data->op_array = op_array;
+#endif
+	// otherwise, we should have an zend_execute_data * to work with
+
+	void * sg_handler = execute_data->op_array->opcodes[0].handler; // first opcode is a JMP
+	void * sg_offset = sg_handler + 0x211010;       // internal sg structure has this offset in ixed.5.4.lin extension
+
+	int i;
+
+	for (i = 0; i < execute_data->op_array->last; i++)
+	{
+		execute_data->opline = &(op_array->opcodes[i]); // opline must be incremented
+
+		// no need to inspect opcode if handler matches the zend handler
+		if ((void *) zend_vm_get_opcode_handler(execute_data->op_array->opcodes[i].opcode, &(execute_data->op_array->opcodes[i])) ==  (void *)execute_data->opline->handler )
+		{
+			continue;
+		}
+
+		switch (execute_data->op_array->opcodes[i].opcode)
+		{
+			// 42
+			case ZEND_JMP:
+			// 100
+			case ZEND_GOTO:
+				fix_jmp(execute_data, sg_offset);
+				break;
+			// 46
+			case ZEND_JMPZ_EX:
+			// 47
+			case ZEND_JMPNZ_EX:
+			// 152
+			case ZEND_JMP_SET:
+			// 158
+			case ZEND_JMP_SET_VAR:
+				fix_jmpnz_ex(execute_data, sg_offset);
+				break;
+			// 45
+			case ZEND_JMPZNZ:
+				fix_jmpznz(execute_data, sg_offset);
+				break;
+			// 68
+			case ZEND_NEW:
+			// 78
+			case ZEND_FE_FETCH:
+			// 77
+			case ZEND_FE_RESET:
+				fix_new(execute_data, sg_offset);
+				break;
+			// 107
+			case ZEND_CATCH:
+				fix_catch(execute_data, sg_offset);
+				break;
+			default:
+				break;
+		}
+	}
+
+	execute_data->op_array = NULL;  // rm ref to actual op_array
+	zend_vm_stack_free(execute_data);
+}
+
+
 /* }}} */
 
 /* {{{
  *    This function provides a hook for execution */
 static void vld_execute_ex(zend_execute_data *execute_data)
 {
+	if (VLD_G(sg_decode))
+	{
+		if (strlen(executed_filename) == 0)
+		{
+			if (strlen(zend_get_executed_filename()) > 255)
+			{
+				php_printf("Warning: Filename is longer than 255 chars. Try renaming.\n");
+			}
+			else
+			{
+				strncpy(executed_filename, zend_get_executed_filename(), sizeof(executed_filename)-1);
+				php_printf("Decoding %s. Includes will not be decoded.\n", executed_filename);
+			}
+		}
+
+		if (strncmp(executed_filename, op_array->filename, strlen(executed_filename)) == 0) {
+
+			// don't dump source guardian encoded stuff
+			if (execute_count == 1)
+			{
+				// first, fix opcodes not contained in a function or class
+				if (op_array->function_name == NULL || strlen(op_array->function_name) == 0) {
+					fix_op_array(op_array);
+					vld_dump_oparray (op_array TSRMLS_CC);
+				}
+
+				// now fix defined functions
+				zend_hash_apply(CG(function_table), (apply_func_t) vld_fix_fe TSRMLS_CC);
+				zend_hash_apply_with_arguments (CG(function_table) APPLY_TSRMLS_CC, (apply_func_args_t) vld_dump_fe, 0);
+
+				// now fix defined classes and class funcs
+				zend_hash_apply (CG(class_table), (apply_func_t) vld_fix_cle TSRMLS_CC);
+				zend_hash_apply (CG(class_table), (apply_func_t) vld_dump_cle TSRMLS_CC);
+			}
+
+		}
+
+	}
+
+	execute_count++;
+
+	old_execute(op_array TSRMLS_DC);
 	// nothing to do
 }
 /* }}} */
+

@@ -21,6 +21,7 @@
 #include "ext/standard/url.h"
 #include "set.h"
 #include "php_vld.h"
+#include "helper.h"
 
 ZEND_EXTERN_MODULE_GLOBALS(vld)
 
@@ -692,8 +693,18 @@ void vld_dump_op(int nr, zend_op * op_ptr, unsigned int base_address, int notdea
 	char *fetch_type = "";
 	unsigned int flags, op1_type, op2_type, res_type;
 	const zend_op op = op_ptr[nr];
-	
-	if (op.lineno == 0) {
+
+	if (zend_vm_get_opcode_handler(op_ptr[nr].opcode, &(op_ptr[nr])) != op_ptr[nr].handler)
+	{
+		php_printf("Op Number: %d, Op Address: %p: \n", nr, &(op_ptr[nr]));
+		php_printf("Address of PHP zend handler is %p\n", zend_vm_get_opcode_handler(op_ptr[nr].opcode, &(op_ptr[nr])) );
+		php_printf("Actual handler for current zend_op is %p\n", op_ptr[nr].handler);
+		php_printf("JMP to -> %p\n", op_ptr[nr].op1.jmp_addr);
+	}
+
+	// source guardian ops don't have line numbers
+	// so they're all line 0
+	if (op.lineno == 0 && !VLD_G(sg_decode)) {
 		return;
 	}
 
@@ -1122,7 +1133,6 @@ void vld_analyse_oparray(zend_op_array *opa, vld_set *set, vld_branch_info *bran
 {
 	unsigned int position = 0;
 
-	VLD_PRINT(1, "Finding entry points\n");
 	while (position < opa->last) {
 		if (position == 0) {
 			vld_analyse_branch(opa, position, set, branch_info TSRMLS_CC);
@@ -1163,7 +1173,6 @@ void vld_analyse_branch(zend_op_array *opa, unsigned int position, vld_set *set,
 		return;
 	}
 	/* Loop over the opcodes until the end of the array, or until a jump point has been found */
-	VLD_PRINT1(2, "Add %d\n", position);
 	vld_set_add(set, position);
 	while (position < opa->last) {
 		jump_pos1 = VLD_JMP_NOT_SET;

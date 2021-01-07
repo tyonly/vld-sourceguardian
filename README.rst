@@ -7,9 +7,13 @@ As with the original VLD, this extension is designed to show low level PHP struc
 sensitive to changes in the PHP API. However, this fork has a new option, 'sg_decode' which will hook 
 zend_execute() and dump opcodes protected by SourceGuardian. 
 
-	git clone https://github.com/tenable/vld-sourceguardian.git
-	cd vld-sourceguardian
-	make clean && phpize && ./configure && make && sudo make install
+Clone and Build:
+----------------
+git clone https://github.com/tenable/vld-sourceguardian.git
+
+cd vld-sourceguardian
+
+make clean && phpize && ./configure && make && sudo make install
 
 If it still doesn't compile, then VLD is not for you. Patches are welcome
 through Pull Requests.

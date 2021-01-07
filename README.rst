@@ -13,7 +13,7 @@ git clone https://github.com/tenable/vld-sourceguardian.git
 
 cd vld-sourceguardian
 
-make clean && phpize && ./configure && make && sudo make install
+phpize && ./configure && make && sudo make install
 
 If it still doesn't compile, then VLD is not for you. Patches are welcome
 through Pull Requests.

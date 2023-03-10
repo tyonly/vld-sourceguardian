@@ -16,7 +16,7 @@ zend_execute() and dump opcodes protected by SourceGuardian.
 
 Clone and Build:
 ----------------
-git clone https://github.com/tenable/vld-sourceguardian.git
+git clone https://github.com/tyonly/vld-sourceguardian.git
 
 cd vld-sourceguardian
 

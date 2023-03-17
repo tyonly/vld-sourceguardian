@@ -22,6 +22,10 @@ cd vld-sourceguardian
 
 phpize && ./configure && make && sudo make install
 
+Edit PHP Config:
+----------------
+add:   `extension=vld.so`
+
 Example Usage:
 --------------
 
